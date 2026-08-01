@@ -1,0 +1,30 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model TranscriptionSession {
+  id          String   @id @default(cuid())
+  title       String
+  type        String // "live" | "upload" | "youtube"
+  source      String? // filename or URL
+  language    String // selected/detected language code, e.g. "en", "es", "fr"
+  status      String // "transcribing" | "completed" | "failed" | "summarizing"
+  transcript  String @default("") // full transcript text
+  segments    String? // JSON string of timestamped segments [{start,end,text}]
+  summary     String? // generated summary (markdown)
+  actionItems String? // JSON string of action items [{text,assignee,priority,due}]
+  duration    Int?    // duration in seconds
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([createdAt])
+  @@index([type])
+}
