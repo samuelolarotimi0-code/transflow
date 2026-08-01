@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { promises as fs } from 'node:fs'
-import { execFile } from 'node:child_process'
+import { execFile, execFileSync } from 'node:child_process'
 import { promisify } from 'node:util'
 import { Server } from 'socket.io'
 import ZAI from 'z-ai-web-dev-sdk'
@@ -11,7 +11,20 @@ import ZAI from 'z-ai-web-dev-sdk'
 const execFileAsync = promisify(execFile)
 
 const PORT = 3003
-const FFMPEG_BIN = '/usr/bin/ffmpeg'
+
+// Resolve ffmpeg binary: use the explicit env var if set, otherwise look it up
+// on PATH (works on macOS via `brew install ffmpeg`, Linux, and Windows).
+function resolveFfmpeg(): string {
+  if (process.env.FFMPEG_BIN) return process.env.FFMPEG_BIN
+  try {
+    const which = execFileSync('which', ['ffmpeg'], { encoding: 'utf8' }).trim()
+    if (which) return which
+  } catch {
+    // `which` not available (e.g. Windows) — fall through to 'ffmpeg'
+  }
+  return 'ffmpeg'
+}
+const FFMPEG_BIN = resolveFfmpeg()
 
 // ---------------------------------------------------------------------------
 // Cached ZAI instance (created lazily on first use, reused afterwards)

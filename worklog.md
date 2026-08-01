@@ -242,3 +242,21 @@ Stage Summary:
 - TranscriptFlow is fully functional and verified. Both services running (Next.js on 3000, WS mini-service on 3003).
 - All core features work: live transcription, video/audio upload transcription, multi-language (20 langs), AI summaries with action items, translation, and 7 export formats (incl. Notion/Trello/Jira for project-management integration).
 - KNOWN LIMITATION: YouTube download is blocked by YouTube's bot-detection ("Sign in to confirm you're not a bot") from this cloud sandbox IP. The code path is correct (yt-dlp runs, errors are handled gracefully with a clear 400 response). It works in typical home/office networks or with cookies (`--cookies-from-browser`). This is an environment limitation, not a code defect.
+
+---
+Task ID: 5
+Agent: main (orchestrator)
+Task: Make the app runnable on localhost (user wants to run it on their own machine)
+
+Work Log:
+- Made the WebSocket connection environment-aware in `src/components/transcription/live-tab.tsx`: on localhost (hostname is localhost/127.0.0.1/0.0.0.0) the socket connects directly to `http://<host>:3003` (no gateway); otherwise falls back to the sandbox's `/?XTransformPort=3003` pattern. Same code works in both environments.
+- Made ffmpeg binary discovery portable in `src/lib/ffmpeg.ts` and `mini-services/transcription-service/index.ts`: respects `FFMPEG_BIN` env var, else looks up `ffmpeg` on PATH via `which`, else falls back to bare `ffmpeg` (Windows). No more hardcoded `/usr/bin/ffmpeg`.
+- Created `.env.example` with `DATABASE_URL="file:./db/custom.db"` (relative path) + optional `FFMPEG_BIN`.
+- Created `start.sh` — one-command launcher: checks prerequisites (node/bun/ffmpeg/yt-dlp), creates `.env` if missing, installs deps, runs `db:push`, starts both the Next.js app (3000) and the mini-service (3003) as foreground children with a cleanup trap. `chmod +x`'d.
+- Created comprehensive `README.md` with: features, prerequisites table (with per-OS install commands), 7-step localhost setup, architecture diagram, ports table, env-var table, troubleshooting (mic permission, mini-service not running, YouTube bot detection, ffmpeg not found, port in use), and project structure.
+- Verified: lint clean, both services responding (app 200, socket.io polling 200), live transcription end-to-end test passes (accurate transcript returned), page renders with all 4 tabs and no errors.
+
+Stage Summary:
+- The app is now fully portable to localhost. User transfers the project folder, runs `./start.sh` (or follows the 7-step guide), and opens http://localhost:3000.
+- Key change: frontend auto-detects localhost vs sandbox, so no code edits needed when moving between environments.
+- Note for sandbox ops: the mini-service must be started with `bun index.ts` (not `bun --hot index.ts`) when detached in this sandbox, because `--hot`'s file-watcher + the sandbox process reaper causes silent exits. The `start.sh` script runs it as a foreground child so `--hot` is fine there.

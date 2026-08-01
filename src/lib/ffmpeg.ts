@@ -1,6 +1,17 @@
-import { spawn } from 'node:child_process'
+import { spawn, execFileSync } from 'node:child_process'
 
-const FFMPEG_BIN = '/usr/bin/ffmpeg'
+// Resolve ffmpeg: explicit env var > PATH lookup > bare 'ffmpeg'.
+function resolveFfmpeg(): string {
+  if (process.env.FFMPEG_BIN) return process.env.FFMPEG_BIN
+  try {
+    const which = execFileSync('which', ['ffmpeg'], { encoding: 'utf8' }).trim()
+    if (which) return which
+  } catch {
+    // Windows has no `which` — fall through to bare name.
+  }
+  return 'ffmpeg'
+}
+const FFMPEG_BIN = resolveFfmpeg()
 
 /**
  * Runs ffmpeg with the given args (without the leading `-y`, which is added

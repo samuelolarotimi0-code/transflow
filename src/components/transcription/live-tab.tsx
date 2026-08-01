@@ -97,12 +97,27 @@ export function LiveTab({ onSaved }: LiveTabProps) {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
       streamRef.current = stream
 
-      const socket = io('/?XTransformPort=3003', {
+      // Environment-aware WebSocket connection.
+      // - On localhost (no gateway): connect directly to port 3003.
+      // - In the sandbox/preview (behind Caddy): use the XTransformPort query
+      //   so the gateway forwards the request to port 3003.
+      const isLocalhost =
+        typeof window !== 'undefined' &&
+        (window.location.hostname === 'localhost' ||
+          window.location.hostname === '127.0.0.1' ||
+          window.location.hostname === '0.0.0.0')
+      const socketUrl = isLocalhost
+        ? `${window.location.protocol}//${window.location.hostname}:3003`
+        : '/'
+      const socketOpts: Parameters<typeof io>[1] = {
         transports: ['websocket', 'polling'],
         forceNew: true,
         reconnection: false,
         timeout: 10000,
-      })
+      }
+      const socket = isLocalhost
+        ? io(socketUrl, { ...socketOpts, path: '/' })
+        : io('/?XTransformPort=3003', socketOpts)
       socketRef.current = socket
 
       await new Promise<void>((resolve, reject) => {
