@@ -2,15 +2,46 @@ import { NextRequest, NextResponse } from 'next/server'
 import { db } from '@/lib/db'
 import { mapSession } from '@/lib/session-mapper'
 import { runFfmpeg } from '@/lib/ffmpeg'
-import { getZAI } from '@/lib/zai'
-import { spawn } from 'node:child_process'
+import { transcribeWavFile } from '@/lib/local-asr'
+import { spawn, execFileSync } from 'node:child_process'
+import { accessSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
 import { readFile, unlink, readdir } from 'node:fs/promises'
 
-const YT_DLP_BIN = 'yt-dlp'
 const YT_DLP_TIMEOUT_MS = 180_000
+
+function pathExists(path: string): boolean {
+  try {
+    accessSync(path)
+    return true
+  } catch {
+    return false
+  }
+}
+
+function findExecutable(name: string): string | null {
+  try {
+    const command = process.platform === 'win32' ? 'where' : 'which'
+    const resolved = execFileSync(command, [name], {
+      encoding: 'utf8',
+      stdio: ['pipe', 'pipe', 'ignore'], // Suppresses "INFO: Could not find files..." from where.exe
+    })
+      .trim()
+      .split(/\r?\n/)[0]
+    return resolved || null
+  } catch {
+    return null
+  }
+}
+
+function resolveYtDlp(): string | null {
+  if (process.env.YT_DLP_BIN) return process.env.YT_DLP_BIN
+  return findExecutable('yt-dlp') || findExecutable('yt-dlp.exe')
+}
+
+const YT_DLP_BIN = resolveYtDlp()
 
 interface ExecResult {
   code: number
@@ -22,6 +53,14 @@ interface ExecResult {
 // gracefully, so we SIGKILL the process if it exceeds the limit.
 function runYtDlp(args: string[], timeoutMs: number): Promise<ExecResult> {
   return new Promise((resolve, reject) => {
+    if (!YT_DLP_BIN) {
+      reject(
+        new Error(
+          'yt-dlp binary not found. Install yt-dlp or set YT_DLP_BIN to the yt-dlp executable path.'
+        )
+      )
+      return
+    }
     const proc = spawn(YT_DLP_BIN, args, { stdio: ['ignore', 'pipe', 'pipe'] })
     let stdout = ''
     let stderr = ''
@@ -174,9 +213,7 @@ export async function POST(req: NextRequest) {
     const wavBytes = await readFile(wavPath)
     const file_base64 = wavBytes.toString('base64')
 
-    const zai = await getZAI()
-    const asrRes = await zai.audio.asr.create({ file_base64 })
-    const transcript: string = (asrRes?.text ?? '').trim()
+    const transcript = await transcribeWavFile(wavPath)
 
     const finalTitle = title || `YouTube: ${videoId}`
 

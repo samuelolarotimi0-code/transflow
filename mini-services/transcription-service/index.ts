@@ -2,56 +2,52 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
-import { promises as fs } from 'node:fs'
+import { accessSync, promises as fs } from 'node:fs'
 import { execFile, execFileSync } from 'node:child_process'
 import { promisify } from 'node:util'
 import { Server } from 'socket.io'
-import ZAI from 'z-ai-web-dev-sdk'
+import ffmpegStatic from 'ffmpeg-static'
+import { transcribeWavFile } from '../../src/lib/local-asr'
 
 const execFileAsync = promisify(execFile)
 
 const PORT = 3003
 
-// Resolve ffmpeg binary: use the explicit env var if set, otherwise look it up
-// on PATH (works on macOS via `brew install ffmpeg`, Linux, and Windows).
+function pathExists(path: string): boolean {
+  try {
+    accessSync(path)
+    return true
+  } catch {
+    return false
+  }
+}
+
+function findExecutable(name: string): string | null {
+  try {
+    const command = process.platform === 'win32' ? 'where' : 'which'
+    const resolved = execFileSync(command, [name], {
+      encoding: 'utf8',
+      stdio: ['pipe', 'pipe', 'ignore'], // Suppresses "INFO: Could not find files..." from where.exe
+    })
+      .trim()
+      .split(/\r?\n/)[0]
+    return resolved || null
+  } catch {
+    return null
+  }
+}
+
+// Resolve ffmpeg binary: use explicit env var, ffmpeg-static package, or PATH lookup.
 function resolveFfmpeg(): string {
   if (process.env.FFMPEG_BIN) return process.env.FFMPEG_BIN
-  try {
-    const which = execFileSync('which', ['ffmpeg'], { encoding: 'utf8' }).trim()
-    if (which) return which
-  } catch {
-    // `which` not available (e.g. Windows) — fall through to 'ffmpeg'
+  if (typeof ffmpegStatic === 'string' && ffmpegStatic && pathExists(ffmpegStatic)) {
+    return ffmpegStatic
   }
+  const found = findExecutable('ffmpeg')
+  if (found) return found
   return 'ffmpeg'
 }
 const FFMPEG_BIN = resolveFfmpeg()
-
-// ---------------------------------------------------------------------------
-// Cached ZAI instance (created lazily on first use, reused afterwards)
-// ---------------------------------------------------------------------------
-type ZaiInstance = Awaited<ReturnType<typeof ZAI.create>>
-let zaiInstance: ZaiInstance | null = null
-let zaiInstanceError: string | null = null
-
-async function getZai(): Promise<ZaiInstance> {
-  if (zaiInstance) return zaiInstance
-  if (zaiInstanceError) {
-    // Surface the previously recorded initialization failure so callers can
-    // emit a clear error to the client instead of retrying on every chunk.
-    throw new Error(`ZAI SDK unavailable: ${zaiInstanceError}`)
-  }
-  try {
-    console.log('[zai] initializing ZAI SDK instance...')
-    zaiInstance = await ZAI.create()
-    console.log('[zai] ZAI SDK instance ready')
-    return zaiInstance
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err)
-    zaiInstanceError = message
-    console.error('[zai] failed to initialize ZAI SDK:', message)
-    throw new Error(`ZAI SDK initialization failed: ${message}`)
-  }
-}
 
 // ---------------------------------------------------------------------------
 // Audio helpers
@@ -130,12 +126,18 @@ const io = new Server(httpServer, {
   pingInterval: 25000,
 })
 
+// Map socket ID -> session audio header / chunks
+const socketHeaderMap = new Map<string, Buffer>()
+const socketAudioBuffers = new Map<string, Buffer[]>()
+
 io.on('connection', (socket) => {
   const clientIp = socket.handshake.address
   console.log(`[socket] connected id=${socket.id} ip=${clientIp}`)
 
   socket.on('start', (payload: StartPayload) => {
     try {
+      socketHeaderMap.delete(socket.id)
+      socketAudioBuffers.set(socket.id, [])
       const sessionId = payload?.sessionId
       const language = payload?.language || 'auto'
       console.log(`[socket] start id=${socket.id} session=${sessionId ?? '-'} lang=${language}`)
@@ -168,7 +170,15 @@ io.on('connection', (socket) => {
     try {
       // Decode base64 → temp input file. Buffer.from handles standard b64.
       const buffer = Buffer.from(base64, 'base64')
-      await fs.writeFile(inputPath, buffer)
+      
+      // Store header chunk from chunk #0 so subsequent streaming chunks have valid WebM headers
+      if (!socketHeaderMap.has(socket.id)) {
+        socketHeaderMap.set(socket.id, buffer)
+        await fs.writeFile(inputPath, buffer)
+      } else {
+        const header = socketHeaderMap.get(socket.id)!
+        await fs.writeFile(inputPath, Buffer.concat([header, buffer]))
+      }
 
       // Convert to 16 kHz mono WAV.
       try {
@@ -192,19 +202,7 @@ io.on('connection', (socket) => {
       const wavBuffer = await fs.readFile(outputPath)
       const file_base64 = wavBuffer.toString('base64')
 
-      const zai = await getZai()
-      const response = await zai.audio.asr.create({
-        file_base64,
-        // Some SDK versions accept a `language` hint; pass it through defensively.
-        ...(chunkLanguage && chunkLanguage !== 'auto'
-          ? { language: chunkLanguage }
-          : {}),
-      } as Record<string, unknown>)
-
-      const text: string =
-        (response && (response as { text?: unknown }).text
-          ? String((response as { text?: unknown }).text)
-          : '') || ''
+      const text = await transcribeAudioBuffer(Buffer.from(wavBuffer))
 
       console.log(
         `[socket] transcript id=${socket.id} lang=${chunkLanguage} len=${text.length} preview=${JSON.stringify(
@@ -228,17 +226,31 @@ io.on('connection', (socket) => {
 
   socket.on('stop', () => {
     console.log(`[socket] stop id=${socket.id}`)
+    socketHeaderMap.delete(socket.id)
+    socketAudioBuffers.delete(socket.id)
     socket.emit('status', { status: 'stopped' })
   })
 
   socket.on('disconnect', (reason) => {
     console.log(`[socket] disconnected id=${socket.id} reason=${reason}`)
+    socketHeaderMap.delete(socket.id)
+    socketAudioBuffers.delete(socket.id)
   })
 
   socket.on('error', (error) => {
     console.error(`[socket] socket error id=${socket.id}:`, error)
   })
 })
+
+async function transcribeAudioBuffer(wavBuffer: Buffer): Promise<string> {
+  const tempPath = join(tmpdir(), `tf-local-asr-${randomUUID()}.wav`)
+  try {
+    await fs.writeFile(tempPath, wavBuffer)
+    return await transcribeWavFile(tempPath)
+  } finally {
+    await safeRemove(tempPath)
+  }
+}
 
 httpServer.listen(PORT, () => {
   console.log(`WebSocket server running on port ${PORT}`)

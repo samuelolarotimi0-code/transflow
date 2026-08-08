@@ -1,15 +1,38 @@
 import { spawn, execFileSync } from 'node:child_process'
+import { accessSync } from 'node:fs'
+import ffmpegStatic from 'ffmpeg-static'
 
-// Resolve ffmpeg: explicit env var > PATH lookup > bare 'ffmpeg'.
-function resolveFfmpeg(): string {
-  if (process.env.FFMPEG_BIN) return process.env.FFMPEG_BIN
+function pathExists(path: string): boolean {
   try {
-    const which = execFileSync('which', ['ffmpeg'], { encoding: 'utf8' }).trim()
-    if (which) return which
+    accessSync(path)
+    return true
   } catch {
-    // Windows has no `which` — fall through to bare name.
+    return false
   }
-  return 'ffmpeg'
+}
+
+function findExecutable(name: string): string | null {
+  try {
+    const command = process.platform === 'win32' ? 'where' : 'which'
+    const resolved = execFileSync(command, [name], {
+      encoding: 'utf8',
+      stdio: ['pipe', 'pipe', 'ignore'], // Suppresses "INFO: Could not find files..." from where.exe
+    })
+      .trim()
+      .split(/\r?\n/)[0]
+    return resolved || null
+  } catch {
+    return null
+  }
+}
+
+// Resolve ffmpeg: explicit env var > ffmpeg-static > PATH lookup > bare 'ffmpeg'.
+function resolveFfmpeg(): string | null {
+  if (process.env.FFMPEG_BIN) return process.env.FFMPEG_BIN
+  if (typeof ffmpegStatic === 'string' && ffmpegStatic && pathExists(ffmpegStatic)) {
+    return ffmpegStatic
+  }
+  return findExecutable('ffmpeg')
 }
 const FFMPEG_BIN = resolveFfmpeg()
 
@@ -21,6 +44,14 @@ const FFMPEG_BIN = resolveFfmpeg()
  */
 export function runFfmpeg(args: string[]): Promise<void> {
   return new Promise((resolve, reject) => {
+    if (!FFMPEG_BIN) {
+      reject(
+        new Error(
+          'ffmpeg binary not found. Install ffmpeg or set FFMPEG_BIN to the ffmpeg executable path.'
+        )
+      )
+      return
+    }
     const proc = spawn(FFMPEG_BIN, ['-y', ...args], {
       stdio: ['ignore', 'pipe', 'pipe'],
     })

@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { db } from '@/lib/db'
 import { mapSession } from '@/lib/session-mapper'
 import { runFfmpeg } from '@/lib/ffmpeg'
-import { getZAI } from '@/lib/zai'
+import { transcribeWavFile } from '@/lib/local-asr'
 import { tmpdir } from 'node:os'
 import { randomUUID } from 'node:crypto'
 import { extname, basename, join } from 'node:path'
@@ -63,9 +63,7 @@ export async function POST(req: NextRequest) {
     const wavBytes = await readFile(outputPath)
     const file_base64 = wavBytes.toString('base64')
 
-    const zai = await getZAI()
-    const asrRes = await zai.audio.asr.create({ file_base64 })
-    const transcript: string = (asrRes?.text ?? '').trim()
+    const transcript = await transcribeWavFile(outputPath)
 
     const baseName = basename(originalName, originalExt) || originalName
     const finalTitle = title && title.trim() ? title.trim() : baseName

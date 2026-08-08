@@ -59,18 +59,35 @@ export function LiveTab({ onSaved }: LiveTabProps) {
 
   const cleanup = useCallback(() => {
     stopTimer()
-    if (recorderRef.current && recorderRef.current.state !== 'inactive') {
+
+    const recorder = recorderRef.current
+    if (recorder) {
       try {
-        recorderRef.current.stop()
+        recorder.ondataavailable = null
+        recorder.onstop = null
+        if (recorder.state !== 'inactive') {
+          recorder.stop()
+        }
       } catch {}
+      recorderRef.current = null
     }
-    recorderRef.current = null
+
     if (streamRef.current) {
       streamRef.current.getTracks().forEach((t) => t.stop())
       streamRef.current = null
     }
-    if (socketRef.current) {
-      socketRef.current.disconnect()
+
+    const socket = socketRef.current
+    if (socket) {
+      try {
+        socket.emit('stop')
+      } catch {}
+      try {
+        socket.removeAllListeners()
+      } catch {}
+      try {
+        socket.disconnect()
+      } catch {}
       socketRef.current = null
     }
   }, [])
@@ -198,7 +215,9 @@ export function LiveTab({ onSaved }: LiveTabProps) {
 
   const stopRecording = () => {
     setIsRecording(false)
+    setIsConnecting(false)
     setInterim('')
+    setError(null)
     cleanup()
   }
 
@@ -317,6 +336,17 @@ export function LiveTab({ onSaved }: LiveTabProps) {
                   : 'Click the mic to start'}
               </p>
             </div>
+            {isRecording && (
+              <Button
+                onClick={stopRecording}
+                variant="outline"
+                size="sm"
+                className="w-full border-rose-300 text-rose-600 hover:bg-rose-50 dark:border-rose-800 dark:text-rose-400 dark:hover:bg-rose-950"
+              >
+                <Square className="mr-2 h-4 w-4" fill="currentColor" />
+                Stop recording
+              </Button>
+            )}
           </div>
 
           {isRecording && (
