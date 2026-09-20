@@ -1,6 +1,7 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { randomUUID } from 'node:crypto'
 import { accessSync, promises as fs } from 'node:fs'
 import { execFile, execFileSync } from 'node:child_process'
@@ -8,6 +9,9 @@ import { promisify } from 'node:util'
 import { Server } from 'socket.io'
 import ffmpegStatic from 'ffmpeg-static'
 import { transcribeWavFile } from '../../src/lib/local-asr'
+
+const __filename = fileURLToPath(import.meta.url)
+const __dirname = dirname(__filename)
 
 const execFileAsync = promisify(execFile)
 
@@ -37,13 +41,34 @@ function findExecutable(name: string): string | null {
   }
 }
 
-// Resolve ffmpeg binary: use explicit env var, ffmpeg-static package, or PATH lookup.
+function verifyExecutable(binPath: string): boolean {
+  try {
+    execFileSync(binPath, ['-version'], {
+      stdio: ['ignore', 'ignore', 'ignore'],
+      timeout: 5000,
+    })
+    return true
+  } catch {
+    return false
+  }
+}
+
+// Resolve ffmpeg binary: use explicit env var, project bin, PATH lookup, or validated ffmpeg-static.
 function resolveFfmpeg(): string {
-  if (process.env.FFMPEG_BIN) return process.env.FFMPEG_BIN
-  if (typeof ffmpegStatic === 'string' && ffmpegStatic && pathExists(ffmpegStatic)) {
+  if (process.env.FFMPEG_BIN && pathExists(process.env.FFMPEG_BIN) && verifyExecutable(process.env.FFMPEG_BIN)) {
+    return process.env.FFMPEG_BIN
+  }
+  const projectBin = join(__dirname, '../../bin', process.platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg')
+  if (pathExists(projectBin) && verifyExecutable(projectBin)) {
+    return projectBin
+  }
+  const found = findExecutable('ffmpeg') || (process.platform === 'win32' ? findExecutable('ffmpeg.exe') : null)
+  if (found && verifyExecutable(found)) {
+    return found
+  }
+  if (typeof ffmpegStatic === 'string' && ffmpegStatic && pathExists(ffmpegStatic) && verifyExecutable(ffmpegStatic)) {
     return ffmpegStatic
   }
-  const found = findExecutable('ffmpeg')
   if (found) return found
   return 'ffmpeg'
 }
@@ -119,6 +144,7 @@ const httpServer = createServer((req: IncomingMessage, res: ServerResponse) => {
   res.end(JSON.stringify({ error: 'not found' }))
 })
 
+// @ts-ignore
 const io = new Server(httpServer, {
   path: '/',
   cors: { origin: '*', methods: ['GET', 'POST'] },

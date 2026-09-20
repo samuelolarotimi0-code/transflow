@@ -3,7 +3,7 @@
   "version": "0.2.1",
   "private": true,
   "scripts": {
-    "dev": "next dev -p 3000",
+    "dev": "next dev --webpack -p 3000",
     "transcribe": "npm --prefix mini-services/transcription-service run dev",
     "build": "prisma generate && next build && node -e \"const fs=require('fs'); if(fs.existsSync('.next/static')) fs.cpSync('.next/static', '.next/standalone/.next/static', {recursive: true}); if(fs.existsSync('public')) fs.cpSync('public', '.next/standalone/public', {recursive: true})\"",
     "start": "node .next/standalone/server.js",

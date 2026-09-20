@@ -1,7 +1,6 @@
 'use client'
 
 import { useEffect, useRef, useState, useCallback } from 'react'
-import { io, type Socket } from 'socket.io-client'
 import {
   Mic,
   Square,
@@ -13,6 +12,7 @@ import {
   Check,
   AlertCircle,
   Radio,
+  Info,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
@@ -21,6 +21,14 @@ import { LanguageSelect } from './language-select'
 import { type TranscriptionSession } from '@/lib/constants'
 import { apiFetch, formatDuration, wordCount } from '@/lib/hooks'
 import { toast } from 'sonner'
+
+// Extend window type for webkit-prefixed Speech Recognition
+declare global {
+  interface Window {
+    SpeechRecognition: typeof SpeechRecognition
+    webkitSpeechRecognition: typeof SpeechRecognition
+  }
+}
 
 interface LiveTabProps {
   onSaved: (session: TranscriptionSession) => void
@@ -36,19 +44,29 @@ export function LiveTab({ onSaved }: LiveTabProps) {
   const [error, setError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
   const [copied, setCopied] = useState(false)
+  const [speechSupported, setSpeechSupported] = useState<boolean | null>(null)
 
-  const socketRef = useRef<Socket | null>(null)
-  const recorderRef = useRef<MediaRecorder | null>(null)
-  const streamRef = useRef<MediaStream | null>(null)
+  const recognitionRef = useRef<SpeechRecognition | null>(null)
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const transcriptRef = useRef('')
-  const chunksSentRef = useRef(0)
-  const chunksDoneRef = useRef(0)
+  const isRecordingRef = useRef(false)
 
-  // keep transcriptRef in sync
+  // Keep refs in sync with state for closures
   useEffect(() => {
     transcriptRef.current = transcript
   }, [transcript])
+
+  useEffect(() => {
+    isRecordingRef.current = isRecording
+  }, [isRecording])
+
+  // Check browser support on mount
+  useEffect(() => {
+    const supported =
+      typeof window !== 'undefined' &&
+      !!(window.SpeechRecognition || window.webkitSpeechRecognition)
+    setSpeechSupported(supported)
+  }, [])
 
   const stopTimer = () => {
     if (timerRef.current) {
@@ -57,176 +75,126 @@ export function LiveTab({ onSaved }: LiveTabProps) {
     }
   }
 
-  const cleanup = useCallback(() => {
+  const stopRecognition = useCallback(() => {
     stopTimer()
-
-    const recorder = recorderRef.current
-    if (recorder) {
-      try {
-        recorder.ondataavailable = null
-        recorder.onstop = null
-        if (recorder.state !== 'inactive') {
-          recorder.stop()
-        }
-      } catch {}
-      recorderRef.current = null
-    }
-
-    if (streamRef.current) {
-      streamRef.current.getTracks().forEach((t) => t.stop())
-      streamRef.current = null
-    }
-
-    const socket = socketRef.current
-    if (socket) {
-      try {
-        socket.emit('stop')
-      } catch {}
-      try {
-        socket.removeAllListeners()
-      } catch {}
-      try {
-        socket.disconnect()
-      } catch {}
-      socketRef.current = null
+    const rec = recognitionRef.current
+    if (rec) {
+      try { rec.onresult = null } catch {}
+      try { rec.onerror = null } catch {}
+      try { rec.onend = null } catch {}
+      try { rec.stop() } catch {}
+      recognitionRef.current = null
     }
   }, [])
 
   useEffect(() => {
-    return () => cleanup()
-  }, [cleanup])
+    return () => stopRecognition()
+  }, [stopRecognition])
 
-  const blobToBase64 = (blob: Blob): Promise<string> =>
-    new Promise((resolve, reject) => {
-      const reader = new FileReader()
-      reader.onloadend = () => {
-        const result = reader.result as string
-        resolve(result.split(',')[1])
-      }
-      reader.onerror = reject
-      reader.readAsDataURL(blob)
-    })
-
-  const startRecording = async () => {
+  const startRecording = () => {
     setError(null)
     setIsConnecting(true)
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
-      streamRef.current = stream
 
-      // Environment-aware WebSocket connection.
-      // - On localhost (no gateway): connect directly to port 3003.
-      // - In the sandbox/preview (behind Caddy): use the XTransformPort query
-      //   so the gateway forwards the request to port 3003.
-      const isLocalhost =
-        typeof window !== 'undefined' &&
-        (window.location.hostname === 'localhost' ||
-          window.location.hostname === '127.0.0.1' ||
-          window.location.hostname === '0.0.0.0')
-      const socketUrl = isLocalhost
-        ? `${window.location.protocol}//${window.location.hostname}:3003`
-        : '/'
-      const socketOpts: Parameters<typeof io>[1] = {
-        transports: ['websocket', 'polling'],
-        forceNew: true,
-        reconnection: false,
-        timeout: 10000,
+    const SpeechRecognitionImpl =
+      window.SpeechRecognition || window.webkitSpeechRecognition
+
+    if (!SpeechRecognitionImpl) {
+      setError('Your browser does not support live speech recognition. Try Chrome or Edge.')
+      setIsConnecting(false)
+      return
+    }
+
+    const rec = new SpeechRecognitionImpl()
+    rec.continuous = true
+    rec.interimResults = true
+    rec.maxAlternatives = 1
+
+    // Map our language codes to BCP-47 tags that Web Speech API expects
+    if (language !== 'auto') {
+      const bcp47Map: Record<string, string> = {
+        zh: 'zh-CN',
+        pt: 'pt-PT',
       }
-      const socket = isLocalhost
-        ? io(socketUrl, { ...socketOpts, path: '/' })
-        : io('/?XTransformPort=3003', socketOpts)
-      socketRef.current = socket
+      rec.lang = bcp47Map[language] ?? language
+    }
 
-      await new Promise<void>((resolve, reject) => {
-        const to = setTimeout(() => reject(new Error('Connection timeout')), 10000)
-        socket.on('connect', () => {
-          clearTimeout(to)
-          resolve()
-        })
-        socket.on('connect_error', (err: Error) => {
-          clearTimeout(to)
-          reject(new Error('Could not connect to transcription service'))
-        })
-      })
+    recognitionRef.current = rec
 
-      socket.emit('start', { language })
-
-      socket.on('transcript', (data: { text: string; isFinal: boolean }) => {
-        chunksDoneRef.current += 1
-        const text = (data.text || '').trim()
-        if (!text) return
-        if (data.isFinal) {
-          setInterim('')
-          setTranscript((prev) => {
-            const next = prev ? prev + ' ' + text : text
-            return next
-          })
-        } else {
-          setInterim(text)
-        }
-      })
-
-      socket.on('error', (data: { message: string }) => {
-        // non-fatal: surface as a transient toast but keep recording
-        toast.error(data.message || 'Transcription error')
-      })
-
-      socket.on('status', (data: { status: string; message?: string }) => {
-        if (data.status === 'error') {
-          toast.error(data.message || 'Transcription service error')
-        }
-      })
-
-      const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
-        ? 'audio/webm;codecs=opus'
-        : MediaRecorder.isTypeSupported('audio/webm')
-          ? 'audio/webm'
-          : ''
-      const recorder = mimeType
-        ? new MediaRecorder(stream, { mimeType })
-        : new MediaRecorder(stream)
-      recorderRef.current = recorder
-
-      recorder.ondataavailable = async (e) => {
-        if (e.data.size > 0 && socket.connected) {
-          chunksSentRef.current += 1
-          try {
-            const base64 = await blobToBase64(e.data)
-            socket.emit('audio-chunk', { base64, mimeType: mimeType || 'audio/webm', language })
-          } catch {}
-        }
-      }
-
-      recorder.start(3000)
+    rec.onstart = () => {
+      setIsConnecting(false)
       setIsRecording(true)
       setDuration(0)
       timerRef.current = setInterval(() => setDuration((d) => d + 1), 1000)
+    }
+
+    rec.onresult = (event: SpeechRecognitionEvent) => {
+      let finalText = ''
+      let interimText = ''
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        const result = event.results[i]
+        const text = result[0].transcript
+        if (result.isFinal) {
+          finalText += text
+        } else {
+          interimText += text
+        }
+      }
+      if (finalText) {
+        setTranscript((prev) => {
+          const cleaned = finalText.trim()
+          return prev ? prev + ' ' + cleaned : cleaned
+        })
+        setInterim('')
+      }
+      if (interimText) {
+        setInterim(interimText)
+      }
+    }
+
+    rec.onerror = (event: SpeechRecognitionErrorEvent) => {
+      if (event.error === 'no-speech') return // non-fatal
+      const messages: Record<string, string> = {
+        'not-allowed': 'Microphone permission denied. Allow access and try again.',
+        'audio-capture': 'No microphone found or it is in use by another app.',
+        network: 'Network error — check your connection.',
+        aborted: 'Recording stopped.',
+      }
+      setError(messages[event.error] ?? `Speech error: ${event.error}`)
+      stopRecording()
+    }
+
+    // Restart automatically in continuous mode unless user stopped
+    rec.onend = () => {
+      if (isRecordingRef.current) {
+        try { recognitionRef.current?.start() } catch {}
+      } else {
+        stopTimer()
+        setIsRecording(false)
+        setInterim('')
+      }
+    }
+
+    try {
+      rec.start()
     } catch (e: any) {
-      setError(
-        e?.name === 'NotAllowedError'
-          ? 'Microphone permission denied. Please allow access and try again.'
-          : e.message || 'Could not start recording'
-      )
-      cleanup()
-    } finally {
+      setError(e.message || 'Could not start recording')
       setIsConnecting(false)
     }
   }
 
-  const stopRecording = () => {
+  const stopRecording = useCallback(() => {
+    isRecordingRef.current = false
     setIsRecording(false)
     setIsConnecting(false)
     setInterim('')
     setError(null)
-    cleanup()
-  }
+    stopRecognition()
+  }, [stopRecognition])
 
   const clearTranscript = () => {
     setTranscript('')
     setInterim('')
     setDuration(0)
-    chunksSentRef.current = 0
-    chunksDoneRef.current = 0
   }
 
   const save = async (summarize: boolean) => {
@@ -287,13 +255,28 @@ export function LiveTab({ onSaved }: LiveTabProps) {
               Live transcription
             </h3>
             <p className="text-sm text-muted-foreground">
-              Capture audio from your microphone and watch it transcribe in real time. Pick a language or let us auto-detect.
+              Capture audio from your microphone and watch it transcribe in real time using your browser&apos;s built-in speech recognition.
             </p>
           </div>
+
+          {speechSupported === false && (
+            <div className="flex items-start gap-2 rounded-lg border border-amber-300 bg-amber-50 dark:bg-amber-950/30 dark:border-amber-700 p-3">
+              <AlertCircle className="h-4 w-4 text-amber-600 shrink-0 mt-0.5" />
+              <p className="text-xs text-amber-700 dark:text-amber-300">
+                Live speech recognition is not supported in this browser. Please use Chrome or Edge.
+              </p>
+            </div>
+          )}
 
           <div className="space-y-2">
             <label className="text-sm font-medium">Language</label>
             <LanguageSelect value={language} onChange={setLanguage} className="w-full" />
+            {language === 'auto' && (
+              <p className="text-xs text-muted-foreground flex items-center gap-1">
+                <Info className="h-3 w-3" />
+                Browser will use your system locale for auto-detect
+              </p>
+            )}
           </div>
 
           {/* Mic button */}
@@ -435,7 +418,7 @@ export function LiveTab({ onSaved }: LiveTabProps) {
           {isRecording && (
             <div className="px-5 py-2 border-t bg-rose-50/50 dark:bg-rose-950/20 text-xs text-rose-600 dark:text-rose-300 flex items-center gap-2">
               <span className="h-2 w-2 rounded-full bg-rose-500 tf-blink" />
-              Recording in progress · {chunksSentRef.current} chunks sent
+              Recording in progress
             </div>
           )}
         </CardContent>
