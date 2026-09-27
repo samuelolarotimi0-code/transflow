@@ -1,0 +1,37 @@
+# fly.toml – TranscriptFlow Next.js app
+# Deploy with: fly deploy --config fly.toml
+# Run once to create: fly launch --no-deploy --config fly.toml
+
+app = "transflow-app"
+primary_region = "lax"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  NODE_ENV        = "production"
+  PORT            = "3000"
+  NEXT_TELEMETRY_DISABLED = "1"
+
+# Secrets to set via CLI (never commit these):
+#   fly secrets set DATABASE_URL="postgresql://..." --app transflow-app
+#   fly secrets set DIRECT_URL="postgresql://..."   --app transflow-app
+#   fly secrets set NEXTAUTH_SECRET="..."            --app transflow-app
+#   fly secrets set NEXTAUTH_URL="https://transflow-app.fly.dev" --app transflow-app
+#   fly secrets set TRANSCRIPTION_SERVICE_URL="wss://transflow-transcribe.fly.dev" --app transflow-app
+
+[http_service]
+  internal_port        = 3000
+  force_https          = true
+  auto_stop_machines   = "stop"
+  auto_start_machines  = true
+  min_machines_running = 0
+
+  [http_service.concurrency]
+    type       = "requests"
+    hard_limit = 200
+    soft_limit = 150
+
+[[vm]]
+  size   = "shared-cpu-1x"
+  memory = "512mb"

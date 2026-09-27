@@ -1,0 +1,44 @@
+# fly.toml – TranscriptFlow transcription mini-service
+# Deploy with: fly deploy --config fly.transcribe.toml
+# Run once:    fly launch --no-deploy --config fly.transcribe.toml
+
+app = "transflow-transcribe"
+primary_region = "lax"
+
+[build]
+  # Build context must be the repo root so COPY can reach src/lib/local-asr.ts
+  dockerfile      = "mini-services/transcription-service/Dockerfile"
+  build_target    = ""
+
+[env]
+  PORT          = "3003"
+  WHISPER_MODEL = "base"
+  # LOCAL_ASR_PYTHON is baked into the Dockerfile as /opt/whisper-venv/bin/python
+
+# Secrets:
+#   fly secrets set LOCAL_ASR_PYTHON="/opt/whisper-venv/bin/python" --app transflow-transcribe
+#   (usually not needed — already set in Dockerfile ENV)
+
+[http_service]
+  internal_port        = 3003
+  force_https          = true
+  auto_stop_machines   = "stop"
+  auto_start_machines  = true
+  min_machines_running = 0
+
+  # WebSocket connections are long-lived — raise idle timeout
+  [http_service.concurrency]
+    type       = "connections"
+    hard_limit = 25
+    soft_limit = 20
+
+[[vm]]
+  # Whisper "base" model needs at least 1 GB RAM
+  size   = "shared-cpu-1x"
+  memory = "1gb"
+
+# Persist the Whisper model cache between deploys so the model
+# doesn't re-download on every cold start.
+[mounts]
+  source      = "whisper_cache"
+  destination = "/root/.cache/whisper"
