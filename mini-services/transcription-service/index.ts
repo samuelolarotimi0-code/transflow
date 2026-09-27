@@ -1,10 +1,9 @@
-import { createServer as createHttpServer, type IncomingMessage, type ServerResponse } from 'node:http'
-import { createServer as createHttpsServer } from 'node:https'
+import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { randomUUID } from 'node:crypto'
-import { accessSync, existsSync, readFileSync, promises as fs } from 'node:fs'
+import { accessSync, promises as fs } from 'node:fs'
 import { execFile, execFileSync } from 'node:child_process'
 import { promisify } from 'node:util'
 import { Server } from 'socket.io'
@@ -133,7 +132,7 @@ interface StartPayload {
 // HTTP + Socket.io server
 // ---------------------------------------------------------------------------
 
-const requestListener = (req: IncomingMessage, res: ServerResponse) => {
+const httpServer = createServer((req: IncomingMessage, res: ServerResponse) => {
   // Minimal health-check endpoint. The gateway may hit "/" with GET during
   // polling transport negotiation; socket.io will handle the WS upgrade.
   if (req.method === 'GET' && (req.url === '/' || req.url === '/health')) {
@@ -143,15 +142,7 @@ const requestListener = (req: IncomingMessage, res: ServerResponse) => {
   }
   res.writeHead(404, { 'Content-Type': 'application/json' })
   res.end(JSON.stringify({ error: 'not found' }))
-}
-
-const certPath = join(__dirname, '../../localhost+2.pem')
-const keyPath = join(__dirname, '../../localhost+2-key.pem')
-const hasCert = existsSync(certPath) && existsSync(keyPath)
-
-const httpServer = hasCert
-  ? createHttpsServer({ cert: readFileSync(certPath), key: readFileSync(keyPath) }, requestListener)
-  : createHttpServer(requestListener)
+})
 
 // @ts-ignore
 const io = new Server(httpServer, {
@@ -288,7 +279,7 @@ async function transcribeAudioBuffer(wavBuffer: Buffer): Promise<string> {
 }
 
 httpServer.listen(PORT, () => {
-  console.log(`WebSocket server running on port ${PORT} (${hasCert ? 'HTTPS/WSS' : 'HTTP/WS'})`)
+  console.log(`WebSocket server running on port ${PORT}`)
 })
 
 // ---------------------------------------------------------------------------

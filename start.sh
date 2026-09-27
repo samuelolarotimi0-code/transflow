@@ -63,7 +63,7 @@ APP_PID=$!
 echo ""
 echo "============================================================"
 echo "  TranscriptFlow is running!"
-echo "  → App:           https://localhost:3000"
+echo "  → App:           http://localhost:3000"
 echo "  → Transcription: ws://localhost:3003 (internal)"
 echo "  Press Ctrl+C to stop both services."
 echo "============================================================"
