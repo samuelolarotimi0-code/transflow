@@ -23,6 +23,11 @@ import {
   Clock,
   User,
   AlertCircle,
+  Edit3,
+  Save,
+  X,
+  RotateCcw,
+  Type,
 } from 'lucide-react'
 import { LanguageSelect } from './language-select'
 import { ExportMenu } from './export-menu'
@@ -73,8 +78,50 @@ export function SessionDetail({
   const [translating, setTranslating] = useState(false)
   const [translateLang, setTranslateLang] = useState('en')
   const [checked, setChecked] = useState<Record<number, boolean>>({})
+  const [isEditingTranscript, setIsEditingTranscript] = useState(false)
+  const [editedTranscript, setEditedTranscript] = useState('')
+  const [savingTranscript, setSavingTranscript] = useState(false)
 
   if (!session) return null
+
+  const handleStartEdit = () => {
+    setEditedTranscript(session.transcript || '')
+    setIsEditingTranscript(true)
+  }
+
+  const handleCancelEdit = () => {
+    setIsEditingTranscript(false)
+    setEditedTranscript('')
+  }
+
+  const handleSaveTranscript = async () => {
+    setSavingTranscript(true)
+    try {
+      const data = await apiFetch<{ session: TranscriptionSession }>(
+        `/api/sessions/${session.id}`,
+        {
+          method: 'PATCH',
+          body: JSON.stringify({ transcript: editedTranscript }),
+        }
+      )
+      onUpdate(data.session)
+      setIsEditingTranscript(false)
+      toast.success('Transcript updated')
+    } catch (e: any) {
+      toast.error(e.message || 'Failed to update transcript')
+    } finally {
+      setSavingTranscript(false)
+    }
+  }
+
+  const handleFixPunctuation = () => {
+    let s = editedTranscript.replace(/\s+([,.\?!:;])/g, '$1')
+    s = s.replace(/([,.\?!:;])([a-zA-Z])/g, '$1 $2')
+    s = s.replace(/[ \t]+/g, ' ')
+    s = s.replace(/(^\s*|[.!?]\s+)([a-z])/g, (_, p1, p2) => p1 + p2.toUpperCase())
+    if (s && !/[.!?]$/.test(s.trim())) s = s.trim() + '.'
+    setEditedTranscript(s)
+  }
 
   const handleSummarize = async () => {
     setSummarizing(true)
@@ -279,16 +326,80 @@ export function SessionDetail({
 
             {/* Transcript */}
             <section>
-              <h3 className="flex items-center gap-2 text-sm font-semibold uppercase tracking-wide text-muted-foreground mb-3">
-                Transcript
-              </h3>
-              <div className="rounded-lg border bg-muted/20 p-4">
-                {session.transcript ? (
-                  <p className="text-sm leading-relaxed whitespace-pre-wrap">{session.transcript}</p>
+              <div className="flex items-center justify-between mb-3">
+                <h3 className="flex items-center gap-2 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
+                  Transcript
+                  <span className="text-xs font-normal lowercase">({words} words)</span>
+                </h3>
+                {!isEditingTranscript ? (
+                  <Button
+                    onClick={handleStartEdit}
+                    variant="outline"
+                    size="sm"
+                    className="h-7 text-xs gap-1.5"
+                  >
+                    <Edit3 className="h-3.5 w-3.5" />
+                    Edit
+                  </Button>
                 ) : (
-                  <p className="text-sm text-muted-foreground italic">No transcript available.</p>
+                  <div className="flex items-center gap-1.5">
+                    <Button
+                      onClick={handleFixPunctuation}
+                      variant="ghost"
+                      size="sm"
+                      className="h-7 text-xs gap-1"
+                      title="Fix sentence capitalization & punctuation"
+                    >
+                      <Type className="h-3.5 w-3.5" />
+                      Fix Punctuation
+                    </Button>
+                    <Button
+                      onClick={handleCancelEdit}
+                      variant="ghost"
+                      size="sm"
+                      className="h-7 text-xs"
+                      disabled={savingTranscript}
+                    >
+                      Cancel
+                    </Button>
+                    <Button
+                      onClick={handleSaveTranscript}
+                      size="sm"
+                      className="h-7 text-xs gap-1 bg-emerald-600 hover:bg-emerald-700 text-white"
+                      disabled={savingTranscript}
+                    >
+                      {savingTranscript ? (
+                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      ) : (
+                        <Save className="h-3.5 w-3.5" />
+                      )}
+                      Save changes
+                    </Button>
+                  </div>
                 )}
               </div>
+
+              {isEditingTranscript ? (
+                <div className="space-y-2">
+                  <textarea
+                    value={editedTranscript}
+                    onChange={(e) => setEditedTranscript(e.target.value)}
+                    className="w-full min-h-[220px] p-3 text-sm leading-relaxed rounded-lg border bg-background text-foreground focus:outline-none focus:ring-1 focus:ring-emerald-500 font-sans resize-y"
+                    spellCheck
+                  />
+                  <p className="text-[11px] text-muted-foreground">
+                    Edit transcript text directly and click Save changes when done.
+                  </p>
+                </div>
+              ) : (
+                <div className="rounded-lg border bg-muted/20 p-4">
+                  {session.transcript ? (
+                    <p className="text-sm leading-relaxed whitespace-pre-wrap">{session.transcript}</p>
+                  ) : (
+                    <p className="text-sm text-muted-foreground italic">No transcript available.</p>
+                  )}
+                </div>
+              )}
             </section>
           </div>
         </ScrollArea>

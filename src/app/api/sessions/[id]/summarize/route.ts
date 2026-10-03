@@ -3,6 +3,7 @@ import { db } from '@/lib/db'
 import { mapSession } from '@/lib/session-mapper'
 import { getLanguageLabel, type ActionItem } from '@/lib/constants'
 import { getZAI } from '@/lib/zai'
+import { resolveGroqKey, summarizeWithGroq } from '@/lib/groq'
 
 type Params = { params: Promise<{ id: string }> }
 
@@ -74,31 +75,44 @@ export async function POST(req: NextRequest, { params }: Params) {
     let summary = ''
     let actionItems: ActionItem[] = []
 
-    try {
-      const zai = await getZAI()
-      const completion = await zai.chat.completions.create({
-        messages: [
-          { role: 'assistant', content: SYSTEM_PROMPT },
-          { role: 'user', content: USER_PROMPT },
-        ],
-        thinking: { type: 'disabled' },
-      })
-      const text: string = completion?.choices?.[0]?.message?.content ?? ''
+    const apiKey = typeof body?.apiKey === 'string' ? body.apiKey : undefined
+    const groqKey = resolveGroqKey(req, apiKey)
 
-      try {
-        const parsed = JSON.parse(stripFences(text))
-        if (typeof parsed?.summary === 'string' && parsed.summary.trim()) {
-          summary = parsed.summary
-        } else {
-          // Shape was unexpected — fall back to raw text.
+    try {
+      if (groqKey) {
+        const groqResult = await summarizeWithGroq({
+          text: transcript,
+          language: langCode,
+          apiKey: groqKey,
+        })
+        summary = groqResult.summary
+        actionItems = groqResult.actionItems
+      } else {
+        const zai = await getZAI()
+        const completion = await zai.chat.completions.create({
+          messages: [
+            { role: 'assistant', content: SYSTEM_PROMPT },
+            { role: 'user', content: USER_PROMPT },
+          ],
+          thinking: { type: 'disabled' },
+        })
+        const text: string = completion?.choices?.[0]?.message?.content ?? ''
+
+        try {
+          const parsed = JSON.parse(stripFences(text))
+          if (typeof parsed?.summary === 'string' && parsed.summary.trim()) {
+            summary = parsed.summary
+          } else {
+            // Shape was unexpected — fall back to raw text.
+            summary = text
+          }
+          actionItems = coerceActionItems(parsed?.actionItems)
+        } catch {
+          // JSON parse failed — fall back to storing the raw text as summary
+          // and an empty actionItems array (per spec).
           summary = text
+          actionItems = []
         }
-        actionItems = coerceActionItems(parsed?.actionItems)
-      } catch {
-        // JSON parse failed — fall back to storing the raw text as summary
-        // and an empty actionItems array (per spec).
-        summary = text
-        actionItems = []
       }
     } catch (llmErr) {
       // The LLM call itself failed. Reset status to 'completed' (so the UI

@@ -9,6 +9,65 @@ export class ApiError extends Error {
   }
 }
 
+export const GROQ_STORAGE_KEY = 'tf_groq_api_key'
+
+export function getStoredGroqKey(): string {
+  if (typeof window === 'undefined') return ''
+  return localStorage.getItem(GROQ_STORAGE_KEY) || ''
+}
+
+export function setStoredGroqKey(key: string) {
+  if (typeof window === 'undefined') return
+  if (key.trim()) {
+    localStorage.setItem(GROQ_STORAGE_KEY, key.trim())
+  } else {
+    localStorage.removeItem(GROQ_STORAGE_KEY)
+  }
+  window.dispatchEvent(new Event('groq-key-updated'))
+}
+
+export function useGroqKey() {
+  const [groqKey, setGroqKeyState] = useState<string>('')
+  const [hasEnvKey, setHasEnvKey] = useState<boolean>(false)
+  const [checking, setChecking] = useState<boolean>(true)
+
+  useEffect(() => {
+    const updateKey = () => {
+      setGroqKeyState(getStoredGroqKey())
+    }
+    updateKey()
+
+    const checkConfig = async () => {
+      try {
+        const res = await fetch('/api/ai/config')
+        const data = await res.json()
+        setHasEnvKey(Boolean(data?.groq?.hasEnvKey))
+      } catch {
+        // ignore
+      } finally {
+        setChecking(false)
+      }
+    }
+    checkConfig()
+
+    window.addEventListener('groq-key-updated', updateKey)
+    window.addEventListener('storage', updateKey)
+    return () => {
+      window.removeEventListener('groq-key-updated', updateKey)
+      window.removeEventListener('storage', updateKey)
+    }
+  }, [])
+
+  const saveKey = (key: string) => {
+    setStoredGroqKey(key)
+    setGroqKeyState(key.trim())
+  }
+
+  const isConfigured = Boolean(groqKey || hasEnvKey)
+
+  return { groqKey, hasEnvKey, isConfigured, checking, saveKey }
+}
+
 /**
  * Generic JSON fetch helper. Set `json` to false for multipart/formdata requests
  * (it won't set the Content-Type header so the browser sets the boundary).
@@ -18,11 +77,17 @@ export async function apiFetch<T>(
   options: RequestInit & { json?: boolean } = {}
 ): Promise<T> {
   const { json = true, headers, ...rest } = options
+  const userGroqKey = getStoredGroqKey()
+  const customHeaders: Record<string, string> = {
+    ...(userGroqKey ? { 'x-groq-api-key': userGroqKey } : {}),
+    ...((headers as Record<string, string>) || {}),
+  }
+
   const res = await fetch(url, {
     ...rest,
     headers: json
-      ? { 'Content-Type': 'application/json', ...(headers || {}) }
-      : { ...(headers || {}) },
+      ? { 'Content-Type': 'application/json', ...customHeaders }
+      : { ...customHeaders },
   })
   const text = await res.text()
   let data: any = null

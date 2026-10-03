@@ -6,13 +6,13 @@ import {
   Upload,
   Youtube,
   Library,
-  AudioLines,
   Heart,
   Globe,
   Sparkles,
   FileDown,
   CheckSquare,
 } from 'lucide-react'
+import Image from 'next/image'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -63,8 +63,15 @@ export default function Home() {
       <header className="sticky top-0 z-40 border-b bg-background/80 backdrop-blur supports-[backdrop-filter]:bg-background/60">
         <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between gap-4">
           <div className="flex items-center gap-2.5">
-            <div className="h-9 w-9 rounded-xl bg-gradient-to-br from-emerald-500 to-teal-600 flex items-center justify-center shadow-sm">
-              <AudioLines className="h-5 w-5 text-white" />
+            <div className="h-9 w-9 rounded-xl overflow-hidden shadow-sm flex items-center justify-center shrink-0 border bg-card">
+              <Image
+                src="/transcriptflow.png"
+                alt="TranscriptFlow logo"
+                width={36}
+                height={36}
+                className="h-full w-full object-contain"
+                priority
+              />
             </div>
             <div className="leading-tight">
               <h1 className="text-base font-bold tracking-tight">TranscriptFlow</h1>
@@ -181,8 +188,14 @@ export default function Home() {
       <footer className="mt-auto border-t bg-muted/30">
         <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 py-6 flex flex-col sm:flex-row items-center justify-between gap-3 text-sm text-muted-foreground">
           <div className="flex items-center gap-2">
-            <div className="h-6 w-6 rounded-md bg-gradient-to-br from-emerald-500 to-teal-600 flex items-center justify-center">
-              <AudioLines className="h-3.5 w-3.5 text-white" />
+            <div className="h-6 w-6 rounded-md overflow-hidden flex items-center justify-center shrink-0 border bg-card">
+              <Image
+                src="/transcriptflow.png"
+                alt="TranscriptFlow logo"
+                width={24}
+                height={24}
+                className="h-full w-full object-contain"
+              />
             </div>
             <span>
               <strong className="text-foreground">TranscriptFlow</strong> — live &amp; video transcription with AI.

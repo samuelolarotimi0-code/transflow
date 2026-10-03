@@ -4,23 +4,47 @@ import { mapSession } from '@/lib/session-mapper'
 import { getLanguageLabel } from '@/lib/constants'
 import { getZAI } from '@/lib/zai'
 
+import { resolveGroqKey, translateWithGroq } from '@/lib/groq'
+
 type Params = { params: Promise<{ id: string }> }
 
-async function translateText(text: string, langLabel: string): Promise<string> {
+async function translateText(text: string, langLabel: string, targetLanguage: string, req: NextRequest, explicitKey?: string): Promise<string> {
   if (!text.trim()) return text
-  const SYSTEM_PROMPT =
-    `You are a professional translator. Translate the provided text into ${langLabel}. ` +
-    'Preserve meaning, tone, and any markdown formatting. Output ONLY the translated text — no commentary.'
-  const zai = await getZAI()
-  const completion = await zai.chat.completions.create({
-    messages: [
-      { role: 'assistant', content: SYSTEM_PROMPT },
-      { role: 'user', content: text },
-    ],
-    thinking: { type: 'disabled' },
-  })
-  const out: string = completion?.choices?.[0]?.message?.content ?? ''
-  return out.trim() || text
+
+  const groqKey = resolveGroqKey(req, explicitKey)
+  if (groqKey) {
+    try {
+      return await translateWithGroq({
+        text,
+        targetLanguage,
+        apiKey: groqKey,
+      })
+    } catch (groqErr) {
+      console.warn('Groq translation error, falling back if possible:', groqErr)
+    }
+  }
+
+  // Fallback to ZAI
+  try {
+    const SYSTEM_PROMPT =
+      `You are a professional translator. Translate the provided text into ${langLabel}. ` +
+      'Preserve meaning, tone, and any markdown formatting. Output ONLY the translated text — no commentary.'
+    const zai = await getZAI()
+    const completion = await zai.chat.completions.create({
+      messages: [
+        { role: 'assistant', content: SYSTEM_PROMPT },
+        { role: 'user', content: text },
+      ],
+      thinking: { type: 'disabled' },
+    })
+    const out: string = completion?.choices?.[0]?.message?.content ?? ''
+    return out.trim() || text
+  } catch (zaiErr) {
+    if (!groqKey) {
+      throw new Error('No Groq API key configured. Please provide your Groq API key in Settings or .env.')
+    }
+    throw zaiErr
+  }
 }
 
 // POST /api/sessions/:id/translate
@@ -45,8 +69,9 @@ export async function POST(req: NextRequest, { params }: Params) {
 
     const langLabel = getLanguageLabel(targetLanguage)
 
-    const translatedTranscript = await translateText(row.transcript || '', langLabel)
-    const translatedSummary = row.summary ? await translateText(row.summary, langLabel) : row.summary
+    const apiKey = typeof body?.apiKey === 'string' ? body.apiKey : undefined
+    const translatedTranscript = await translateText(row.transcript || '', langLabel, targetLanguage, req, apiKey)
+    const translatedSummary = row.summary ? await translateText(row.summary, langLabel, targetLanguage, req, apiKey) : row.summary
 
     const updated = await db.transcriptionSession.update({
       where: { id },
